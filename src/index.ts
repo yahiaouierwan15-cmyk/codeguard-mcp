@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import * as fs from "fs";
+import * as path from "path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -12,9 +14,9 @@ const server = new McpServer({
 
 server.tool(
   "scan_code",
-  "Scan a code snippet for security vulnerabilities (SQL injection, XSS, secrets, etc.)",
+  "Scan a code snippet for security vulnerabilities (SQL injection, XSS, secrets, etc.). NOTE: uses ~50 local regex rules — for full SAST coverage (Semgrep + TruffleHog + OSV + AI triage), use the cloud scanner at https://codeguard.dev.",
   {
-    code: z.string().describe("The source code to scan"),
+    code: z.string().max(500_000, "Code input too large (max 500KB)").describe("The source code to scan"),
     language: z.string().describe("Programming language (js, ts, py, php, java, go, rb, html, etc.)"),
   },
   async ({ code, language }) => {
@@ -46,15 +48,34 @@ server.tool(
   },
 );
 
+function sanitizePath(filePath: string): string {
+  const resolved = path.resolve(filePath);
+  const cwd = process.cwd();
+  if (!resolved.startsWith(cwd + path.sep) && resolved !== cwd) {
+    throw new Error(
+      `Access denied: ${filePath} is outside the workspace root (${cwd}). ` +
+      `Only files within the current working directory can be scanned.`
+    );
+  }
+  const real = fs.realpathSync(resolved);
+  if (!real.startsWith(cwd + path.sep) && real !== cwd) {
+    throw new Error(
+      `Access denied: ${filePath} resolves to ${real} which is outside the workspace root.`
+    );
+  }
+  return real;
+}
+
 server.tool(
   "scan_file",
-  "Scan a local file for security vulnerabilities and return findings with fix suggestions",
+  "Scan a local file for security vulnerabilities and return findings with fix suggestions. NOTE: uses ~50 local regex rules — for full SAST coverage, use https://codeguard.dev.",
   {
     file_path: z.string().describe("Absolute or relative path to the file to scan"),
   },
   async ({ file_path }) => {
     try {
-      const result = scanFile(file_path);
+      const safePath = sanitizePath(file_path);
+      const result = scanFile(safePath);
 
       if (result.findings.length === 0) {
         return {
